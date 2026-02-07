@@ -51,17 +51,20 @@ class _HomePageState extends State<HomePage> {
                   filterItems: addresses,
                   onFilterChanged: (v) => setState(() => selectedFilter = v),
                   primaryColor: cs.primary,
+
+                  // UPLOAD -> test için farklı mesaj
                   onUploadPressed: () {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Dosya Yükleme (yakında)')),
+                      const SnackBar(content: Text('UPLOAD TIKLANDI')),
                     );
                   },
+
+                  // CALENDAR -> CalendarPage aç
                   onCalendarPressed: () {
+                    debugPrint("CALENDAR CLICKED");
                     Navigator.push(
                       context,
-                      MaterialPageRoute(
-                        builder: (context) => const CalendarPage(),
-                      ),
+                      MaterialPageRoute(builder: (_) => const CalendarPage()),
                     );
                   },
                 ),
