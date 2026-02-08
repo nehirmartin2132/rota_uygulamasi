@@ -3,6 +3,6 @@ class Address {
   final String address;
   final String? note;
 
-  Address({required this.code, required this.address, this.note});
+  Address({, required this.address, this.note});
 }
 //aaa
