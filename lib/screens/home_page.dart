@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'dart:io';
+import 'dart:convert';
+import 'package:file_picker/file_picker.dart';
+
 import '../data/address_store.dart';
 import '../models/calendar_event.dart';
 import '../widgets/center_drop_card.dart';
@@ -27,7 +31,7 @@ class _HomePageState extends State<HomePage> {
   final List<String> dropped = [];
   final Map<String, RepeatType> repeatByAddress = {};
 
-  String syncStatus = 'Senkronlandı';
+  String syncStatus = ' ';
 
   // Search (CenterDropCard için)
   final TextEditingController searchCtrl = TextEditingController();
@@ -108,15 +112,15 @@ class _HomePageState extends State<HomePage> {
         selectedFilter = 'Adresler';
       }
 
-      syncStatus = 'Senkronlandı';
+      syncStatus = ' ';
     });
   }
 
   void _dropAddress(String value) {
     if (dropped.length >= maxDaily) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Günlük limit dolu (20).')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Günlük limit dolu (20).')),
+      );
       return;
     }
 
@@ -194,11 +198,72 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  void _runDemoRoute() {
-    // Eğer başlangıç hiç seçilmediyse, null kalsın (START)
-    // İstersen default olarak dropped.first yapabilirsin:
-    // selectedStartAddress ??= dropped.isNotEmpty ? dropped.first : null;
+  // ✅ CSV import (Google Sheets / LibreOffice / Not Defteri)
+  // UI'ye dokunmadan upload butonunu çalıştırır.
+  Future<void> _importAddressesFromExcel() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['csv'],
+      );
 
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+      final path = file.path;
+
+      if (path == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Dosya yolu bulunamadı')),
+        );
+        return;
+      }
+
+      final bytes = await File(path).readAsBytes();
+      final text = utf8.decode(bytes);
+
+      final lines = const LineSplitter().convert(text);
+      if (lines.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('CSV boş')),
+        );
+        return;
+      }
+
+      // Ayırıcı: bazı TR exportlarda ';' olur, bazılarında ',' olur.
+      final header = lines.first;
+      final commaCount = ','.allMatches(header).length;
+      final semiCount = ';'.allMatches(header).length;
+      final sep = semiCount > commaCount ? ';' : ',';
+
+      int added = 0;
+
+      for (final line in lines) {
+        final raw = line.trim();
+        if (raw.isEmpty) continue;
+
+        // ilk sütun adres
+        final firstCol = raw.split(sep).first.trim();
+
+        // başlık satırı
+        if (firstCol.isEmpty) continue;
+        if (firstCol.toLowerCase() == 'adres') continue;
+
+        _addAddressToPoolAndCards(firstCol);
+        added++;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('✅ $added adres CSV’den yüklendi')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('CSV yükleme hatası: $e')),
+      );
+    }
+  }
+
+  void _runDemoRoute() {
     showDialog(
       context: context,
       builder: (_) {
@@ -314,13 +379,7 @@ class _HomePageState extends State<HomePage> {
                   maxCount: maxDaily,
                   syncStatus: syncStatus,
                   onInfoPressed: () => _showAppInfo(context),
-                  onUploadPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Excel import ekranı (sonra).'),
-                      ),
-                    );
-                  },
+                  onUploadPressed: _importAddressesFromExcel,
                   onCalendarPressed: () {
                     Navigator.push(
                       context,
@@ -335,9 +394,7 @@ class _HomePageState extends State<HomePage> {
                   },
                 ),
               ),
-
               const SizedBox(height: 12),
-
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
                 child: Wrap(
@@ -362,7 +419,6 @@ class _HomePageState extends State<HomePage> {
                             AddressStore.remove(a);
                             filterItems.remove(a);
 
-                            // Eğer başlangıç olarak seçiliyse resetle
                             if (selectedStartAddress == a) {
                               selectedStartAddress = null;
                             }
@@ -377,9 +433,7 @@ class _HomePageState extends State<HomePage> {
                   }).toList(),
                 ),
               ),
-
               const SizedBox(height: 12),
-
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -387,7 +441,6 @@ class _HomePageState extends State<HomePage> {
                     children: [
                       Expanded(
                         child: CenterDropCard(
-                          title: 'Günlük Plan',
                           droppedAddresses: dropped,
                           onDropAddress: _dropAddress,
                           maxCount: maxDaily,
@@ -414,10 +467,10 @@ class _HomePageState extends State<HomePage> {
                               onPressed: dropped.isEmpty
                                   ? null
                                   : () => setState(() {
-                                      dropped.clear();
-                                      repeatByAddress.clear();
-                                      selectedStartAddress = null;
-                                    }),
+                                        dropped.clear();
+                                        repeatByAddress.clear();
+                                        selectedStartAddress = null;
+                                      }),
                               icon: const Icon(Icons.delete_outline),
                               label: const Text('Temizle'),
                             ),
@@ -634,13 +687,10 @@ RouteResult buildBestRouteDemo(List<String> dropped, {String? startAddress}) {
       .toSet()
       .toList();
 
-  // start seçildiyse ve stops içinde varsa onu kullan, yoksa START
   final String start = (startAddress != null && stops.contains(startAddress))
       ? startAddress
       : 'START';
 
-  // Eğer start bir adresse, zaten stops içinde.
-  // Eğer START ise, START'ı düğüm gibi düşünerek tur atıyoruz.
   final List<String> nodes = (start == 'START') ? ['START', ...stops] : stops;
 
   final nn = _nearestNeighborTour(nodes, start);

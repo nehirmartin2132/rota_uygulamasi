@@ -12,7 +12,7 @@ class TopActionBar extends StatelessWidget {
     this.onInfoPressed, // ✅ NEW
     this.selectedCount = 0,
     this.maxCount = 20,
-    this.syncStatus = 'Senkronlandı',
+    this.syncStatus = '', // ✅ SADECE BU YAZI KALDIRILDI
   });
 
   final String filterValue;
@@ -38,8 +38,8 @@ class TopActionBar extends StatelessWidget {
     final badgeColor = full
         ? Colors.red
         : warn
-        ? Colors.orange
-        : c;
+            ? Colors.orange
+            : c;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -87,10 +87,6 @@ class TopActionBar extends StatelessWidget {
               ),
             ),
           ),
-
-          const SizedBox(width: 12),
-
-          _Pill(icon: Icons.cloud_done_outlined, text: syncStatus, color: c),
 
           const SizedBox(width: 10),
 

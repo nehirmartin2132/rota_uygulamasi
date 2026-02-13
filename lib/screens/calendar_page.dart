@@ -11,9 +11,7 @@ class CalendarPage extends StatefulWidget {
 
 class _CalendarPageState extends State<CalendarPage> {
   // Üst dropdown
-  // ✅ Demo liste yerine ortak havuz (haritadan seçilenler burada birikir)
-  List<String> get addresses => AddressStore.items;
-
+  final List<String> addresses = AddressStore.items;
   String selectedAddress = 'Adresler';
 
   late DateTime weekStart; // Pazartesi
@@ -25,6 +23,109 @@ class _CalendarPageState extends State<CalendarPage> {
   // Eventler (gün bazında)
   final Map<DateTime, List<CalendarEvent>> _eventsByDay = {};
 
+  // Tekrarları ileri tarihlere kopyalama sınırı
+  static const int _repeatHorizonDays = 730; // ~2 yıl
+
+  void _addEventToDay(DateTime dayKey, CalendarEvent ev) {
+    _eventsByDay.putIfAbsent(dayKey, () => []);
+    _eventsByDay[dayKey]!.add(ev);
+  }
+
+  int _daysInMonth(int year, int month) => DateTime(year, month + 1, 0).day;
+
+  DateTime _addMonthsKeepingDay(DateTime dt, int addMonths) {
+    final int totalMonths = (dt.year * 12) + (dt.month - 1) + addMonths;
+    final int y = totalMonths ~/ 12;
+    final int m = (totalMonths % 12) + 1;
+    final int day = dt.day.clamp(1, _daysInMonth(y, m));
+    return DateTime(y, m, day, dt.hour, dt.minute);
+  }
+
+  // =========================
+  // ✅ ÇAKIŞMA KONTROLÜ
+  // =========================
+  bool _overlaps(DateTime aStart, DateTime aEnd, DateTime bStart, DateTime bEnd) {
+    // [aStart, aEnd) ile [bStart, bEnd) kesişiyor mu?
+    return aStart.isBefore(bEnd) && aEnd.isAfter(bStart);
+  }
+
+  bool _hasConflictOnDay(DateTime dayKey, DateTime start, DateTime end) {
+    final list = _eventsByDay[dayKey];
+    if (list == null || list.isEmpty) return false;
+
+    for (final e in list) {
+      if (_overlaps(start, end, e.start, e.end)) return true;
+    }
+    return false;
+  }
+
+  /// Tekrarları da dahil ederek eklemeyi dener.
+  /// Çakışma varsa: (false, conflictDate)
+  /// Başarılıysa: (true, null)
+  ({bool ok, DateTime? conflictDay}) _tryAddEventWithRepeat(CalendarEvent base) {
+    final occurrences = <({DateTime start, DateTime end})>[];
+
+    // base occurrence
+    occurrences.add((start: base.start, end: base.end));
+
+    if (base.repeat != RepeatType.none) {
+      final baseStartOnly = _dateOnly(base.start);
+      final horizon = baseStartOnly.add(const Duration(days: _repeatHorizonDays));
+
+      int i = 1;
+      while (true) {
+        DateTime occStart;
+        switch (base.repeat) {
+          case RepeatType.daily:
+            occStart = base.start.add(Duration(days: i));
+            break;
+          case RepeatType.weekly:
+            occStart = base.start.add(Duration(days: 7 * i));
+            break;
+          case RepeatType.monthly:
+            occStart = _addMonthsKeepingDay(base.start, i);
+            break;
+          case RepeatType.none:
+            occStart = base.start;
+            break;
+        }
+
+        if (occStart.isAfter(horizon)) break;
+
+        final duration = base.end.difference(base.start);
+        final occEnd = occStart.add(duration);
+        occurrences.add((start: occStart, end: occEnd));
+
+        i++;
+      }
+    }
+
+    // 1) Önce hepsi için çakışma kontrolü
+    for (final occ in occurrences) {
+      final dayKey = _dateOnly(occ.start);
+      if (_hasConflictOnDay(dayKey, occ.start, occ.end)) {
+        return (ok: false, conflictDay: dayKey);
+      }
+    }
+
+    // 2) Çakışma yoksa ekle
+    for (final occ in occurrences) {
+      final dayKey = _dateOnly(occ.start);
+      _addEventToDay(
+        dayKey,
+        CalendarEvent(
+          title: base.title,
+          start: occ.start,
+          end: occ.end,
+          repeat: base.repeat,
+          note: base.note,
+        ),
+      );
+    }
+
+    return (ok: true, conflictDay: null);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -35,33 +136,29 @@ class _CalendarPageState extends State<CalendarPage> {
 
   @override
   Widget build(BuildContext context) {
-    final days = List.generate(
-      7,
-      (i) => _dateOnly(weekStart.add(Duration(days: i))),
-    );
-    final monthLabel = '${_monthName(days[0].month)} ${days[0].year}';
+    final days = List<DateTime>.generate(7, (i) => weekStart.add(Duration(days: i)));
 
-    // ✅ DropdownButton crash olmasın: value listede yoksa resetle
     if (!addresses.contains(selectedAddress)) {
       selectedAddress = 'Adresler';
     }
 
     return Scaffold(
+      backgroundColor: const Color(0xFFF3F4F3),
       body: SafeArea(
         child: Column(
           children: [
-            // ====== ÜST YEŞİL BAR ======
+            // ===== ÜST YEŞİL BAR =====
             Container(
-              height: 58,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
+              height: 56,
               color: const Color(0xFF43A047),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
               child: Row(
                 children: [
                   IconButton(
                     onPressed: () => Navigator.pop(context),
                     icon: const Icon(Icons.arrow_back, color: Colors.white),
-                    splashRadius: 20,
                   ),
+                  const SizedBox(width: 6),
 
                   // Dropdown
                   Container(
@@ -69,28 +166,26 @@ class _CalendarPageState extends State<CalendarPage> {
                     padding: const EdgeInsets.symmetric(horizontal: 10),
                     decoration: BoxDecoration(
                       color: Colors.white,
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.black12),
                     ),
                     child: DropdownButtonHideUnderline(
                       child: DropdownButton<String>(
                         value: selectedAddress,
                         items: addresses
-                            .map(
-                              (e) => DropdownMenuItem(
-                                value: e,
-                                child: Text(e, overflow: TextOverflow.ellipsis),
-                              ),
-                            )
+                            .map((a) => DropdownMenuItem<String>(
+                                  value: a,
+                                  child: Text(a),
+                                ))
                             .toList(),
-                        onChanged: (v) =>
-                            setState(() => selectedAddress = v ?? 'Adresler'),
+                        onChanged: (v) => setState(() => selectedAddress = v ?? 'Adresler'),
                       ),
                     ),
                   ),
 
                   const SizedBox(width: 10),
 
-                  // ✅ DRAGGABLE CHIP (adres seçilince çıkıyor)
+                  // DRAGGABLE CHIP (adres seçilince çıkıyor)
                   if (selectedAddress != 'Adresler')
                     Draggable<String>(
                       data: selectedAddress,
@@ -99,54 +194,22 @@ class _CalendarPageState extends State<CalendarPage> {
                         child: _dragChip(selectedAddress, active: true),
                       ),
                       childWhenDragging: Opacity(
-                        opacity: 0.5,
+                        opacity: 0.55,
                         child: _dragChip(selectedAddress),
                       ),
                       child: _dragChip(selectedAddress),
                     ),
 
                   const Spacer(),
-
                   const Text(
                     'Takvim',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-
-                  const Spacer(),
-
-                  IconButton(
-                    onPressed: () {
-                      showDialog<void>(
-                        context: context,
-                        builder: (ctx) => AlertDialog(
-                          title: const Text('Takvim'),
-                          content: const Text(
-                            '1) Dropdown’dan bir adres seç.\n'
-                            '2) Yanında çıkan chip’i sürükle.\n'
-                            '3) Gün + saat hücresine bırak.\n'
-                            '4) Tekrar / not / bitiş seçip kaydet.',
-                          ),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(ctx),
-                              child: const Text('Tamam'),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.help_outline, color: Colors.white),
-                    splashRadius: 20,
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
                   ),
                 ],
               ),
             ),
 
-            // ====== TAKVİM ALANI ======
+            // ===== KALAN ALAN =====
             Expanded(
               child: Container(
                 color: const Color(0xFFF3F4F3),
@@ -160,46 +223,34 @@ class _CalendarPageState extends State<CalendarPage> {
                         Align(
                           alignment: Alignment.centerLeft,
                           child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 10,
-                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                             decoration: BoxDecoration(
-                              color: const Color(0xFF2D2D2D),
+                              color: const Color(0xFF2A2A2A),
                               borderRadius: BorderRadius.circular(10),
                             ),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Text(
-                                  monthLabel,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w700,
-                                  ),
+                                  '${_monthName(days[0].month)} ${days[0].year}',
+                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
                                 ),
                                 const SizedBox(width: 10),
-                                _arrowBtn(Icons.chevron_left, () {
-                                  setState(() {
-                                    weekStart = weekStart.subtract(
-                                      const Duration(days: 7),
-                                    );
-                                    if (!_isSameWeek(selectedDay, weekStart)) {
-                                      selectedDay = _dateOnly(weekStart);
-                                    }
-                                  });
-                                }),
+                                _navBtn(
+                                  Icons.chevron_left,
+                                  () => setState(() {
+                                    weekStart = weekStart.subtract(const Duration(days: 7));
+                                    selectedDay = _dateOnly(weekStart);
+                                  }),
+                                ),
                                 const SizedBox(width: 6),
-                                _arrowBtn(Icons.chevron_right, () {
-                                  setState(() {
-                                    weekStart = weekStart.add(
-                                      const Duration(days: 7),
-                                    );
-                                    if (!_isSameWeek(selectedDay, weekStart)) {
-                                      selectedDay = _dateOnly(weekStart);
-                                    }
-                                  });
-                                }),
+                                _navBtn(
+                                  Icons.chevron_right,
+                                  () => setState(() {
+                                    weekStart = weekStart.add(const Duration(days: 7));
+                                    selectedDay = _dateOnly(weekStart);
+                                  }),
+                                ),
                               ],
                             ),
                           ),
@@ -207,234 +258,157 @@ class _CalendarPageState extends State<CalendarPage> {
 
                         const SizedBox(height: 10),
 
-                        // Gün satırı (Mon..Sun + gün numarası)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 10,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF2D2D2D),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Row(
-                            children: List.generate(7, (i) {
-                              final d = days[i];
-                              final isSelected = _isSameDate(d, selectedDay);
-
-                              return Expanded(
-                                child: InkWell(
-                                  onTap: () => setState(() => selectedDay = d),
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Text(
-                                        _weekdayShort(d.weekday),
-                                        style: TextStyle(
-                                          color: Colors.white.withOpacity(0.75),
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Container(
-                                        width: 26,
-                                        height: 26,
-                                        alignment: Alignment.center,
-                                        decoration: BoxDecoration(
-                                          color: isSelected
-                                              ? const Color(0xFFE53935)
-                                              : Colors.transparent,
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: Text(
-                                          '${d.day}',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.w800,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              );
-                            }),
-                          ),
-                        ),
-
-                        const SizedBox(height: 8),
-
-                        // ====== SAATLİ SCHEDULER GRID ======
+                        // Siyah grid alanı
                         Expanded(
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF1F1F1F),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Row(
-                              children: [
-                                // Sol saat sütunu
-                                SizedBox(
-                                  width: 70,
-                                  child: Column(
-                                    children: hours.map((h) {
-                                      return Expanded(
-                                        child: Center(
-                                          child: Text(
-                                            '${h.toString().padLeft(2, '0')}:00',
-                                            style: TextStyle(
-                                              color: Colors.white.withOpacity(
-                                                0.5,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              color: const Color(0xFF111111),
+                              child: Column(
+                                children: [
+                                  // Gün başlıkları
+                                  Container(
+                                    height: 44,
+                                    padding: const EdgeInsets.only(left: 64),
+                                    color: const Color(0xFF1E1E1E),
+                                    child: Row(
+                                      children: days.map((d) {
+                                        final isSel = _isSameDate(d, selectedDay);
+                                        return Expanded(
+                                          child: InkWell(
+                                            onTap: () => setState(() => selectedDay = _dateOnly(d)),
+                                            child: Container(
+                                              alignment: Alignment.center,
+                                              decoration: BoxDecoration(
+                                                border: Border.all(color: Colors.white.withOpacity(0.08)),
+                                                color: isSel ? Colors.white.withOpacity(0.07) : Colors.transparent,
                                               ),
-                                              fontWeight: FontWeight.w700,
-                                              fontSize: 12,
+                                              child: Column(
+                                                mainAxisAlignment: MainAxisAlignment.center,
+                                                children: [
+                                                  Text(
+                                                    _weekdayShort(d.weekday),
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 12,
+                                                      fontWeight: FontWeight.w800,
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 2),
+                                                  Text(
+                                                    '${d.day}',
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 12,
+                                                      fontWeight: FontWeight.w900,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
                                             ),
                                           ),
-                                        ),
-                                      );
-                                    }).toList(),
+                                        );
+                                      }).toList(),
+                                    ),
                                   ),
-                                ),
 
-                                // Gün kolonları (her hücre DragTarget)
-                                Expanded(
-                                  child: Row(
-                                    children: List.generate(7, (dayIndex) {
-                                      final day = days[dayIndex];
+                                  // Saat satırları
+                                  Expanded(
+                                    child: ListView.builder(
+                                      itemCount: hours.length,
+                                      itemBuilder: (context, rowIdx) {
+                                        final hour = hours[rowIdx];
+                                        return SizedBox(
+                                          height: 56,
+                                          child: Row(
+                                            children: [
+                                              // Saat etiketi
+                                              Container(
+                                                width: 64,
+                                                alignment: Alignment.center,
+                                                decoration: BoxDecoration(
+                                                  border: Border.all(color: Colors.white.withOpacity(0.08)),
+                                                ),
+                                                child: Text(
+                                                  '${hour.toString().padLeft(2, '0')}:00',
+                                                  style: const TextStyle(
+                                                    color: Colors.white70,
+                                                    fontWeight: FontWeight.w800,
+                                                    fontSize: 12,
+                                                  ),
+                                                ),
+                                              ),
 
-                                      return Expanded(
-                                        child: Column(
-                                          children: hours.map((h) {
-                                            final slotStart = DateTime(
-                                              day.year,
-                                              day.month,
-                                              day.day,
-                                              h,
-                                              0,
-                                            );
+                                              // 7 gün hücre
+                                              ...days.map((day) {
+                                                final slotStart =
+                                                    DateTime(day.year, day.month, day.day, hour, 0);
+                                                final eventAtSlot = _findEventAtSlot(day, hour);
 
-                                            final hoveringBorder = Colors.white
-                                                .withOpacity(0.14);
-                                            final borderColor = Colors.white
-                                                .withOpacity(0.08);
+                                                return Expanded(
+                                                  child: DragTarget<String>(
+                                                    onWillAcceptWithDetails: (_) => true,
+                                                    onAcceptWithDetails: (details) {
+                                                      _handleDrop(details.data, slotStart);
+                                                    },
+                                                    builder: (context, candidate, rejected) {
+                                                      final hovering = candidate.isNotEmpty;
 
-                                            final eventAtSlot =
-                                                _findEventAtSlot(day, h);
-
-                                            return Expanded(
-                                              child: DragTarget<String>(
-                                                onWillAcceptWithDetails: (_) =>
-                                                    true,
-                                                onAcceptWithDetails: (details) {
-                                                  _handleDrop(
-                                                    details.data,
-                                                    slotStart,
-                                                  );
-                                                },
-                                                builder: (context, candidate, rejected) {
-                                                  final hovering =
-                                                      candidate.isNotEmpty;
-
-                                                  return Container(
-                                                    margin:
-                                                        const EdgeInsets.all(
-                                                          0.5,
+                                                      return Container(
+                                                        decoration: BoxDecoration(
+                                                          border: Border.all(
+                                                            color: Colors.white.withOpacity(0.08),
+                                                          ),
+                                                          color: hovering
+                                                              ? Colors.white.withOpacity(0.06)
+                                                              : Colors.transparent,
                                                         ),
-                                                    decoration: BoxDecoration(
-                                                      color: hovering
-                                                          ? Colors.white
-                                                                .withOpacity(
-                                                                  0.08,
-                                                                )
-                                                          : Colors.transparent,
-                                                      border: Border.all(
-                                                        color: hovering
-                                                            ? hoveringBorder
-                                                            : borderColor,
-                                                      ),
-                                                    ),
-                                                    child: eventAtSlot == null
-                                                        ? null
-                                                        : Align(
-                                                            alignment: Alignment
-                                                                .centerLeft,
-                                                            child: Padding(
-                                                              padding:
-                                                                  const EdgeInsets.symmetric(
-                                                                    horizontal:
-                                                                        6,
-                                                                    vertical: 4,
-                                                                  ),
-                                                              child: GestureDetector(
-                                                                onTap: () =>
-                                                                    _showEventDetail(
-                                                                      day,
-                                                                      eventAtSlot,
-                                                                    ),
-                                                                onSecondaryTapDown:
-                                                                    (
-                                                                      _,
-                                                                    ) => _removeEvent(
-                                                                      day,
-                                                                      eventAtSlot,
-                                                                    ),
-                                                                child: Container(
-                                                                  padding:
-                                                                      const EdgeInsets.symmetric(
-                                                                        horizontal:
-                                                                            8,
-                                                                        vertical:
-                                                                            5,
+                                                        child: eventAtSlot == null
+                                                            ? null
+                                                            : Align(
+                                                                alignment: Alignment.centerLeft,
+                                                                child: Padding(
+                                                                  padding: const EdgeInsets.symmetric(
+                                                                      horizontal: 6, vertical: 4),
+                                                                  child: GestureDetector(
+                                                                    onTap: () => _showEventDetail(day, eventAtSlot),
+                                                                    onSecondaryTapDown: (_) =>
+                                                                        _removeEvent(day, eventAtSlot),
+                                                                    child: Container(
+                                                                      padding: const EdgeInsets.symmetric(
+                                                                          horizontal: 8, vertical: 5),
+                                                                      decoration: BoxDecoration(
+                                                                        color: Colors.white.withOpacity(0.12),
+                                                                        borderRadius: BorderRadius.circular(999),
+                                                                        border: Border.all(
+                                                                            color: Colors.white.withOpacity(0.16)),
                                                                       ),
-                                                                  decoration: BoxDecoration(
-                                                                    color: Colors
-                                                                        .white
-                                                                        .withOpacity(
-                                                                          0.12,
+                                                                      child: Text(
+                                                                        '${_hhmm(eventAtSlot.start)}-${_hhmm(eventAtSlot.end)} • ${eventAtSlot.title}',
+                                                                        style: const TextStyle(
+                                                                          color: Colors.white,
+                                                                          fontSize: 11,
+                                                                          fontWeight: FontWeight.w700,
                                                                         ),
-                                                                    borderRadius:
-                                                                        BorderRadius.circular(
-                                                                          999,
-                                                                        ),
-                                                                    border: Border.all(
-                                                                      color: Colors
-                                                                          .white
-                                                                          .withOpacity(
-                                                                            0.16,
-                                                                          ),
+                                                                        overflow: TextOverflow.ellipsis,
+                                                                      ),
                                                                     ),
-                                                                  ),
-                                                                  child: Text(
-                                                                    '${_hhmm(eventAtSlot.start)}-${_hhmm(eventAtSlot.end)} • ${eventAtSlot.title}',
-                                                                    style: const TextStyle(
-                                                                      color: Colors
-                                                                          .white,
-                                                                      fontSize:
-                                                                          11,
-                                                                      fontWeight:
-                                                                          FontWeight
-                                                                              .w700,
-                                                                    ),
-                                                                    overflow:
-                                                                        TextOverflow
-                                                                            .ellipsis,
                                                                   ),
                                                                 ),
                                                               ),
-                                                            ),
-                                                          ),
-                                                  );
-                                                },
-                                              ),
-                                            );
-                                          }).toList(),
-                                        ),
-                                      );
-                                    }),
+                                                      );
+                                                    },
+                                                  ),
+                                                );
+                                              }),
+                                            ],
+                                          ),
+                                        );
+                                      },
+                                    ),
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
                             ),
                           ),
                         ),
@@ -445,7 +419,7 @@ class _CalendarPageState extends State<CalendarPage> {
                           alignment: Alignment.centerLeft,
                           child: Text(
                             selectedAddress == 'Adresler'
-                                ? 'İpucu: Dropdown’dan bir adres seç, chip çıkar; onu hücreye bırak.'
+                                ? 'İpucu: Dropdown’dan istediğin adresi seç.'
                                 : 'İpucu: Chip’i istediğin gün+saat hücresine bırak. (Sağ tık: sil)',
                             style: TextStyle(
                               color: Colors.black.withOpacity(0.45),
@@ -485,12 +459,12 @@ class _CalendarPageState extends State<CalendarPage> {
       ),
       builder: (ctx) {
         DateTime toDateTime(TimeOfDay t) => DateTime(
-          slotStart.year,
-          slotStart.month,
-          slotStart.day,
-          t.hour,
-          t.minute,
-        );
+              slotStart.year,
+              slotStart.month,
+              slotStart.day,
+              t.hour,
+              t.minute,
+            );
 
         return Padding(
           padding: EdgeInsets.only(
@@ -505,13 +479,7 @@ class _CalendarPageState extends State<CalendarPage> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    address,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
+                  Text(address, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
                   const SizedBox(height: 8),
                   Text(
                     'Başlangıç: ${slotStart.hour.toString().padLeft(2, '0')}:00',
@@ -519,31 +487,21 @@ class _CalendarPageState extends State<CalendarPage> {
                   ),
                   const SizedBox(height: 12),
 
-                  const Text(
-                    'Bitiş',
-                    style: TextStyle(fontWeight: FontWeight.w800),
-                  ),
+                  const Text('Bitiş', style: TextStyle(fontWeight: FontWeight.w800)),
                   const SizedBox(height: 8),
                   _timeField(
                     label: 'Bitiş Saati',
                     value: endTime.format(ctx),
                     onTap: () async {
-                      final t = await showTimePicker(
-                        context: ctx,
-                        initialTime: endTime,
-                      );
+                      final t = await showTimePicker(context: ctx, initialTime: endTime);
                       if (t == null) return;
                       setModal(() => endTime = t);
                     },
                   ),
 
                   const SizedBox(height: 14),
-                  const Text(
-                    'Tekrar',
-                    style: TextStyle(fontWeight: FontWeight.w800),
-                  ),
+                  const Text('Tekrar', style: TextStyle(fontWeight: FontWeight.w800)),
                   const SizedBox(height: 8),
-
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
                     decoration: BoxDecoration(
@@ -556,26 +514,16 @@ class _CalendarPageState extends State<CalendarPage> {
                         value: repeat,
                         isExpanded: true,
                         items: RepeatType.values
-                            .map(
-                              (r) => DropdownMenuItem(
-                                value: r,
-                                child: Text(r.label),
-                              ),
-                            )
+                            .map((r) => DropdownMenuItem(value: r, child: Text(r.label)))
                             .toList(),
-                        onChanged: (v) =>
-                            setModal(() => repeat = v ?? RepeatType.none),
+                        onChanged: (v) => setModal(() => repeat = v ?? RepeatType.none),
                       ),
                     ),
                   ),
 
                   const SizedBox(height: 14),
-                  const Text(
-                    'Not',
-                    style: TextStyle(fontWeight: FontWeight.w800),
-                  ),
+                  const Text('Not', style: TextStyle(fontWeight: FontWeight.w800)),
                   const SizedBox(height: 8),
-
                   TextField(
                     controller: noteCtrl,
                     maxLines: 3,
@@ -595,7 +543,6 @@ class _CalendarPageState extends State<CalendarPage> {
                   ),
 
                   const SizedBox(height: 14),
-
                   Row(
                     children: [
                       Expanded(
@@ -613,11 +560,15 @@ class _CalendarPageState extends State<CalendarPage> {
 
                             if (!e.isAfter(s)) {
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    'Bitiş saati başlangıçtan sonra olmalı',
-                                  ),
-                                ),
+                                const SnackBar(content: Text('Bitiş saati başlangıçtan sonra olmalı')),
+                              );
+                              return;
+                            }
+
+                            // ✅ Aynı gün içinde anlık çakışma kontrolü (modal kapanmadan)
+                            if (_hasConflictOnDay(_dateOnly(s), s, e)) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Bu saat aralığında başka bir adres var (çakışma).')),
                               );
                               return;
                             }
@@ -629,9 +580,7 @@ class _CalendarPageState extends State<CalendarPage> {
                                 start: s,
                                 end: e,
                                 repeat: repeat,
-                                note: noteCtrl.text.trim().isEmpty
-                                    ? null
-                                    : noteCtrl.text.trim(),
+                                note: noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
                               ),
                             );
                           },
@@ -651,8 +600,17 @@ class _CalendarPageState extends State<CalendarPage> {
     if (created == null) return;
 
     setState(() {
-      _eventsByDay.putIfAbsent(dayKey, () => []);
-      _eventsByDay[dayKey]!.add(created);
+      final result = _tryAddEventWithRepeat(created);
+      if (!result.ok) {
+        final d = result.conflictDay!;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Çakışma var: ${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year}',
+            ),
+          ),
+        );
+      }
     });
   }
 
@@ -700,10 +658,7 @@ class _CalendarPageState extends State<CalendarPage> {
           ],
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Kapat'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Kapat')),
           TextButton(
             onPressed: () {
               Navigator.pop(ctx);
@@ -716,27 +671,44 @@ class _CalendarPageState extends State<CalendarPage> {
     );
   }
 
-  // ====== küçük UI ======
+  // ====== küçük UI parçaları ======
+  Widget _navBtn(IconData icon, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        width: 30,
+        height: 30,
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E1E1E),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white.withOpacity(0.10)),
+        ),
+        child: Icon(icon, color: Colors.white, size: 18),
+      ),
+    );
+  }
+
   static Widget _dragChip(String text, {bool active = false}) {
     return Container(
-      height: 34,
-      constraints: const BoxConstraints(maxWidth: 220),
-      padding: const EdgeInsets.symmetric(horizontal: 12),
+      height: 32,
+      constraints: const BoxConstraints(maxWidth: 230),
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(
-        color: active ? const Color(0xFFE0F2E5) : Colors.white,
+        color: active ? const Color(0xFFE8F5E9) : Colors.white,
         borderRadius: BorderRadius.circular(999),
         border: Border.all(color: Colors.black12),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.drag_indicator, size: 18, color: Colors.black54),
+          const Icon(Icons.place, size: 16, color: Color(0xFF2E7D32)),
           const SizedBox(width: 6),
           Flexible(
             child: Text(
               text,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontWeight: FontWeight.w700),
+              style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF2E7D32)),
             ),
           ),
         ],
@@ -759,63 +731,28 @@ class _CalendarPageState extends State<CalendarPage> {
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: Colors.black12),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Row(
           children: [
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: Colors.black.withOpacity(0.55),
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              value,
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
-            ),
+            Text(label, style: const TextStyle(fontWeight: FontWeight.w800)),
+            const Spacer(),
+            Text(value, style: const TextStyle(fontWeight: FontWeight.w800)),
+            const SizedBox(width: 8),
+            const Icon(Icons.access_time, size: 18),
           ],
         ),
       ),
     );
   }
 
-  Widget _arrowBtn(IconData icon, VoidCallback onTap) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        width: 34,
-        height: 28,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.08),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.white.withOpacity(0.12)),
-        ),
-        child: Icon(icon, color: Colors.white, size: 18),
-      ),
-    );
-  }
-
-  // ====== date helpers ======
+  // ====== Date helpers ======
   DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
+  bool _isSameDate(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
+
   DateTime _startOfWeek(DateTime d) {
-    final day = _dateOnly(d);
-    final diff = day.weekday - DateTime.monday;
-    return day.subtract(Duration(days: diff));
-  }
-
-  bool _isSameDate(DateTime a, DateTime b) =>
-      a.year == b.year && a.month == b.month && a.day == b.day;
-
-  bool _isSameWeek(DateTime d, DateTime start) {
-    final ws = _dateOnly(start);
-    final we = ws.add(const Duration(days: 6));
-    final x = _dateOnly(d);
-    return !x.isBefore(ws) && !x.isAfter(we);
+    final only = _dateOnly(d);
+    final diff = only.weekday - DateTime.monday;
+    return only.subtract(Duration(days: diff));
   }
 
   String _weekdayShort(int w) {
@@ -840,7 +777,7 @@ class _CalendarPageState extends State<CalendarPage> {
   }
 
   String _monthName(int m) {
-    const names = [
+    const months = [
       'January',
       'February',
       'March',
@@ -854,12 +791,12 @@ class _CalendarPageState extends State<CalendarPage> {
       'November',
       'December',
     ];
-    return names[m - 1];
+    return months[m - 1];
   }
 
   String _hhmm(DateTime dt) {
     final h = dt.hour.toString().padLeft(2, '0');
-    final m = dt.minute.toString().padLeft(2, '0'); // ✅ FIX
+    final m = dt.minute.toString().padLeft(2, '0');
     return '$h:$m';
   }
 }
